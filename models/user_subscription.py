@@ -46,8 +46,9 @@ class UserSubscription(Model):
         :return: success True/False
         """
 
-        # The row is written first so that a failing Redis write rolls it back,
-        # rather than leaving the two stores disagreeing
+        # Delivery is granted only once the row is durable. A failure here
+        # therefore under-delivers, which reconciles, instead of delivering to
+        # someone the database has no record of, which does not
         try:
             with transaction.atomic():
                 self.__class__.objects.get_or_create(
@@ -55,11 +56,11 @@ class UserSubscription(Model):
                     category=self.category,
                     action=self.action,
                 )
-                Subscription(
-                    category_slug=self.category.slug,
-                    person_id=self.person.id,
-                    action=self.action,
-                ).save()
+            Subscription(
+                category_slug=self.category.slug,
+                person_id=self.person.id,
+                action=self.action,
+            ).save()
         except Exception:
             logger.exception(
                 'Could not subscribe person %s to %s for %s',
@@ -76,16 +77,17 @@ class UserSubscription(Model):
         :return: success True/False
         """
 
+        # Delivery is revoked before the row, for the same reason
         try:
+            Subscription(
+                person_id=self.person.id,
+                category_slug=self.category.slug,
+                action=self.action,
+            ).delete()
             with transaction.atomic():
                 self.__class__.objects.filter(
                     person=self.person,
                     category=self.category,
-                    action=self.action,
-                ).delete()
-                Subscription(
-                    person_id=self.person.id,
-                    category_slug=self.category.slug,
                     action=self.action,
                 ).delete()
         except Exception:
