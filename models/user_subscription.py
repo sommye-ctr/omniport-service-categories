@@ -39,6 +39,25 @@ class UserSubscription(Model):
             f': {self.person.full_name} ' \
             f'- {self.category.slug}'
 
+    def _grant_delivery(self):
+        """
+        Add the person to the communication store
+        :return: None
+        """
+
+        try:
+            Subscription(
+                category_slug=self.category.slug,
+                person_id=self.person.id,
+                action=self.action,
+            ).save()
+        except Exception:
+            logger.exception(
+                'Subscribed person %s to %s for %s but could not update the '
+                'communication store; reconcilesubscriptions repairs this',
+                self.person_id, self.category.slug, self.action,
+            )
+
     def subscribe(self):
         """
         Custom create method to sync database and communication-store
@@ -46,9 +65,9 @@ class UserSubscription(Model):
         :return: success True/False
         """
 
-        # Delivery is granted only once the row is durable. A failure here
-        # therefore under-delivers, which reconciles, instead of delivering to
-        # someone the database has no record of, which does not
+        # Delivery is granted on commit of the outermost transaction, never
+        # earlier, so that a rollback cannot leave someone being delivered to
+        # with no row behind it
         try:
             with transaction.atomic():
                 self.__class__.objects.get_or_create(
@@ -56,11 +75,7 @@ class UserSubscription(Model):
                     category=self.category,
                     action=self.action,
                 )
-            Subscription(
-                category_slug=self.category.slug,
-                person_id=self.person.id,
-                action=self.action,
-            ).save()
+                transaction.on_commit(self._grant_delivery)
         except Exception:
             logger.exception(
                 'Could not subscribe person %s to %s for %s',
@@ -77,7 +92,9 @@ class UserSubscription(Model):
         :return: success True/False
         """
 
-        # Delivery is revoked before the row, for the same reason
+        # Revoked before the row rather than on commit, because a rollback
+        # then leaves the person subscribed but undelivered, which reconciles,
+        # rather than unsubscribed but still delivered, which does not
         try:
             Subscription(
                 person_id=self.person.id,
